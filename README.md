@@ -37,8 +37,15 @@ The default output of the CLI is the URL of each result.
 Some noteworthy global options are:
 
 * `--jsonl` to get output as JSONL. This includes all information extracted by snscrape (e.g. message content, datetime, images; details vary by scraper).
-* `--max-results NUMBER` to only return the first `NUMBER` results.
-* `--with-entity` to get an item on the entity being scraped, e.g. the user or channel. This is not supported on all scrapers. (You can use this together with `--max-results 0` to only fetch the entity info.)
+* `--max-results NUMBER` to only return the first `NUMBER` results. Duplicate items from overlapping pages are skipped and do not count towards this budget.
+* `--with-entity` to get an item on the entity being scraped, e.g. the user or channel. This is not supported on all scrapers. (You can use this together with `--max-results 0` to only fetch the entity info.) The entity is always the first output line and never counts towards `--max-results`.
+* `--since DATETIME` for incremental archiving: only items newer than the cutoff are output. Scraping continues across overlapping pages until the cursor is exhausted or an entire page consists of items older than the cutoff, so out-of-order items (e.g. a pinned post) no longer cause premature termination. Items without a usable date are still output but do not count towards the all-older page check.
+
+##### Incremental archiving semantics
+
+* Items are deduplicated by a stable identity consisting of their data type and their ID (or their URL/string representation when they have no ID), so repeated items on overlapping pages are emitted exactly once regardless of position.
+* A result counts towards `--max-results` and the progress counter only after its output line has been written completely. If the scrape fails mid-stream, every line already written remains valid and committed.
+* Exit codes distinguish the termination reason: `0` for a normal completion (cursor exhausted, `--since` cutoff, or `--max-results` reached), `1` for a broken pipe (downstream reader closed early), and `2` for a scraper error such as a network or parsing failure.
 
 #### Examples
 Collect all tweets by Jason Scott (@textfiles):

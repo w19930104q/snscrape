@@ -18,7 +18,7 @@ import tempfile
 
 ## Logging
 dumpLocals = False
-logger = logging # Replaced below after setting the logger class
+logger = logging.getLogger(__name__)
 
 
 class Logger(logging.Logger):
@@ -246,7 +246,7 @@ def parse_args():
 	group.add_argument('--jsonl', dest = 'jsonl', action = 'store_true', default = False, help = 'Output JSONL')
 	group.add_argument('--jsonl-for-buggy-int-parser', dest = 'jsonlForBuggyIntParser', action = 'store_true', default = False, help = 'Output JSONL and insert extra string fields into objects for integers exceeding double precision limits')
 	parser.add_argument('--with-entity', dest = 'withEntity', action = 'store_true', default = False, help = 'Include the entity (e.g. user, channel) as the first output item')
-	parser.add_argument('--since', type = parse_datetime_arg, metavar = 'DATETIME', help = 'Only return results newer than DATETIME')
+	parser.add_argument('--since', type = parse_datetime_arg, metavar = 'DATETIME', help = 'Only return results newer than DATETIME; scraping stops only once an entire page is older than DATETIME')
 	parser.add_argument('--progress', action = 'store_true', default = False, help = 'Report progress on stderr')
 
 	subparsers = parser.add_subparsers(dest = 'scraper', metavar = 'SCRAPER', title = 'scrapers', required = True)
@@ -273,8 +273,6 @@ def parse_args():
 
 def setup_logging():
 	logging.setLoggerClass(Logger)
-	global logger
-	logger = logging.getLogger(__name__)
 
 
 def configure_logging(verbosity, dumpLocals_):
@@ -303,44 +301,102 @@ def configure_logging(verbosity, dumpLocals_):
 	rootLogger.addHandler(handler)
 
 
+# Exit codes
+EXIT_OK = 0
+EXIT_BROKEN_PIPE = 1 # Downstream closed the pipe; all lines written before the break remain committed.
+EXIT_SCRAPER_ERROR = 2 # The scraper failed (network, parsing, ...); all lines written before the failure remain committed.
+
+
+def _render_item(item, args):
+	if args.jsonl:
+		return item.json(forBuggyIntParser = args.jsonlForBuggyIntParser)
+	elif args.format is not None:
+		return args.format.format(item)
+	else:
+		return str(item)
+
+
+def run(args, scraper = None):
+	'''Run a scrape according to the parsed CLI args.
+
+	Returns an exit code. Items are counted only after their output line has been written completely, so a failure mid-stream leaves exactly the already-committed lines on stdout.
+	'''
+
+	import snscrape.base
+
+	resultCount = 0
+	seenIdentities = set()
+	try:
+		if scraper is None:
+			scraper = args.cls._cli_from_args(args)
+
+		if args.withEntity and (entity := scraper.entity):
+			# The entity is always the first output item and never counts towards --max-results.
+			print(_render_item(entity, args))
+		if args.maxResults == 0:
+			logger.info('Exiting after 0 results')
+			return EXIT_OK
+
+		for page in scraper.iter_item_pages():
+			page = list(page)
+			pageHasUndatableItem = False
+			pageAllOlder = bool(page) and args.since is not None
+			for item in page:
+				date = getattr(item, 'date', None)
+				if args.since is not None and date is None:
+					# Items without a usable date can't be compared against the cutoff and must not trigger termination.
+					logger.warning(f'Item has no usable date, not applying --since filter to it')
+					pageHasUndatableItem = True
+
+				# Stable data-type identity: deduplicate overlapping pages and repeated items regardless of their position in the stream.
+				identity = snscrape.base.stable_item_identity(item)
+				if identity in seenIdentities:
+					logger.info(f'Skipping duplicate item {identity!s}')
+					continue
+				seenIdentities.add(identity)
+
+				if args.since is not None and date is not None and date < args.since:
+					continue
+				if args.since is not None and date is not None and date >= args.since:
+					pageAllOlder = False
+
+				print(_render_item(item, args))
+				# Count only after the line has been written in full; a failure before this point does not count the item.
+				resultCount += 1
+				if args.progress and resultCount % 100 == 0:
+					print(f'Scraping, {resultCount} results so far', file = sys.stderr)
+				if args.maxResults and resultCount >= args.maxResults:
+					logger.info(f'Exiting after {resultCount} results')
+					if args.progress:
+						print(f'Stopped scraping after {resultCount} results due to --max-results', file = sys.stderr)
+					return EXIT_OK
+
+			if pageAllOlder and not pageHasUndatableItem:
+				# Every item on this whole page is older than the cutoff; pinned/out-of-order items on earlier pages no longer cause an early exit.
+				logger.info(f'Exiting due to reaching a page entirely older than {args.since}')
+				return EXIT_OK
+		else:
+			logger.info(f'Done, found {resultCount} results')
+			if args.progress:
+				print(f'Finished, {resultCount} results', file = sys.stderr)
+			return EXIT_OK
+	except BrokenPipeError:
+		# Redirect stdout to /dev/null so that further writes (e.g. interpreter shutdown) don't re-raise. Committed lines stay intact.
+		devnullFd = os.open(os.devnull, os.O_WRONLY)
+		try:
+			os.dup2(devnullFd, sys.stdout.fileno())
+		finally:
+			os.close(devnullFd)
+		logger.error(f'Broken pipe after {resultCount} committed results')
+		return EXIT_BROKEN_PIPE
+	except Exception as e:
+		logger.error(f'{type(e).__module__}.{type(e).__name__}: {e!s}; stopping after {resultCount} committed results')
+		return EXIT_SCRAPER_ERROR
+
+
 def main():
 	setup_logging()
 	args = parse_args()
 	configure_logging(args.verbosity, args.dumpLocals)
-	scraper = args.cls._cli_from_args(args)
-
-	i = 0
 	with _dump_locals_on_exception():
-		try:
-			if args.withEntity and (entity := scraper.entity):
-				if args.jsonl:
-					print(entity.json(forBuggyIntParser = args.jsonlForBuggyIntParser))
-				else:
-					print(entity)
-			if args.maxResults == 0:
-				logger.info('Exiting after 0 results')
-				return
-			for i, item in enumerate(scraper.get_items(), start = 1):
-				if args.since is not None and item.date < args.since:
-					logger.info(f'Exiting due to reaching older results than {args.since}')
-					break
-				if args.jsonl:
-					print(item.json(forBuggyIntParser = args.jsonlForBuggyIntParser))
-				elif args.format is not None:
-					print(args.format.format(item))
-				else:
-					print(item)
-				if args.progress and i % 100 == 0:
-					print(f'Scraping, {i} results so far', file = sys.stderr)
-				if args.maxResults and i >= args.maxResults:
-					logger.info(f'Exiting after {i} results')
-					if args.progress:
-						print(f'Stopped scraping after {i} results due to --max-results', file = sys.stderr)
-					break
-			else:
-				logger.info(f'Done, found {i} results')
-				if args.progress:
-					print(f'Finished, {i} results', file = sys.stderr)
-		except BrokenPipeError:
-			os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
-			sys.exit(1)
+		sys.exit(run(args))

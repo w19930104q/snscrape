@@ -1,4 +1,4 @@
-__all__ = ['DeprecatedFeatureWarning', 'Item', 'IntWithGranularity', 'ScraperException', 'EntityUnavailable', 'Scraper']
+__all__ = ['DeprecatedFeatureWarning', 'Item', 'IntWithGranularity', 'ScraperException', 'EntityUnavailable', 'Scraper', 'stable_item_identity']
 
 
 import abc
@@ -177,6 +177,19 @@ class EntityUnavailable(ScraperException):
 	'''The target entity of the scrape is unavailable, possibly because it does not exist or was suspended.'''
 
 
+def stable_item_identity(item):
+	'''Return a hashable, stable identity for an Item.
+
+	The identity is based on the item's data type (i.e. its class) together with its stable identifier, so that items of different types but identical IDs are not conflated.
+	Items with an ``id`` field/attribute use it; otherwise the item's string representation (typically its URL) is used.
+	'''
+
+	identifier = getattr(item, 'id', None)
+	if identifier is None:
+		identifier = str(item)
+	return (type(item).__module__, type(item).__qualname__, identifier)
+
+
 class Scraper:
 	'''An abstract base class for a scraper.'''
 
@@ -193,6 +206,15 @@ class Scraper:
 		'''Iterator yielding Items.'''
 
 		pass
+
+	def iter_item_pages(self):
+		'''Iterator yielding pages (lists/iterables of Items) as returned by the underlying service.
+
+		Scrapers with real pagination should override this to yield one page per request, which lets consumers apply page-level semantics such as stopping only when a whole page is older than a cutoff.
+		The default implementation wraps the flat get_items() iterator into a single page, which is equivalent for non-paginated streams.
+		'''
+
+		yield list(self.get_items())
 
 	def _get_entity(self):
 		'''Get the entity behind the scraper, if any.

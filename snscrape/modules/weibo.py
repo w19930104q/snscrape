@@ -101,6 +101,10 @@ class WeiboUserScraper(snscrape.base.Scraper):
 		  )
 
 	def get_items(self):
+		for page in self.iter_item_pages():
+			yield from page
+
+	def iter_item_pages(self):
 		self._ensure_user_id()
 		if self._user is _userDoesNotExist:
 			return
@@ -111,11 +115,13 @@ class WeiboUserScraper(snscrape.base.Scraper):
 			if r.status_code != 200:
 				raise snscrape.base.ScraperException(f'Got status code {r.status_code}')
 			o = r.json()
+			page = []
 			for card in o['data']['cards']:
 				if card['card_type'] != 9:
 					_logger.warning(f'Skipping card of type {card["card_type"]}')
 					continue
-				yield self._mblog_to_item(card['mblog'])
+				page.append(self._mblog_to_item(card['mblog']))
+			yield page
 			if 'since_id' not in o['data']['cardlistInfo']:
 				# End of pagination
 				break

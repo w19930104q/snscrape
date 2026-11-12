@@ -241,6 +241,10 @@ class VKontakteUserScraper(snscrape.base.Scraper):
 		return self._initialPage, self._initialPageSoup
 
 	def get_items(self):
+		for page in self.iter_item_pages():
+			yield from page
+
+	def iter_item_pages(self):
 		r, soup = self._initial_page()
 		if r.status_code == 404:
 			_logger.warning('Wall does not exist')
@@ -270,13 +274,15 @@ class VKontakteUserScraper(snscrape.base.Scraper):
 
 		def _process_soup(soup):
 			nonlocal last1000PostIDs
+			page = []
 			for item in self._soup_to_items(soup):
 				postID = int(item.url.rsplit('_', 1)[1])
 				if postID not in last1000PostIDs:
-					yield item
+					page.append(item)
 					last1000PostIDs.append(postID)
+			return page
 
-		yield from _process_soup(soup)
+		yield _process_soup(soup)
 
 		lastWorkingOffset = 0
 		for offset in itertools.count(start = 10, step = 10):
@@ -296,12 +302,12 @@ class VKontakteUserScraper(snscrape.base.Scraper):
 							if geoPosts == '"\\/blank.php?block=119910902"':
 								continue
 							raise snscrape.base.ScraperException(f'Got an unknown response: {geoPosts[:200]!r}...')
-						yield from _process_soup(soup = bs4.BeautifulSoup(geoPosts, 'lxml'))
+						yield _process_soup(soup = bs4.BeautifulSoup(geoPosts, 'lxml'))
 					continue
 				raise snscrape.base.ScraperException(f'Got an unknown response: {posts[:200]!r}...')
 			lastWorkingOffset = offset
 			soup = bs4.BeautifulSoup(posts, 'lxml')
-			yield from _process_soup(soup)
+			yield _process_soup(soup)
 
 	def _get_wall_offset(self, fixedPostID, ownerID, offset):
 		headers = self._headers.copy()

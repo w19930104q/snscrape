@@ -1716,11 +1716,17 @@ class TwitterSearchScraper(_TwitterAPIScraper):
 		self._mode = mode
 
 	def get_items(self):
+		for page in self.iter_item_pages():
+			yield from page
+
+	def iter_item_pages(self):
 		if not self._query.strip():
 			raise ValueError('empty query')
 		if self._mode is TwitterSearchScraperMode.USER:
 			raise snscrape.base.ScraperException('User searches currently unsupported')
+		yield from self._iter_search_timeline_pages()
 
+	def _iter_search_timeline_pages(self):
 		paginationVariables = {
 			'rawQuery': self._query,
 			'count': 20,
@@ -1761,7 +1767,7 @@ class TwitterSearchScraper(_TwitterAPIScraper):
 		paginationParams = {'variables': paginationVariables, 'features': features}
 
 		for obj in self._iter_api_data('https://twitter.com/i/api/graphql/7jT5GT59P8IFjgxwqnEdQw/SearchTimeline', _TwitterAPIType.GRAPHQL, params, paginationParams, cursor = self._cursor, instructionsPath = ['data', 'search_by_raw_query', 'search_timeline', 'timeline', 'instructions']):
-			yield from self._graphql_timeline_instructions_to_tweets(obj['data']['search_by_raw_query']['search_timeline']['timeline']['instructions'])
+			yield list(self._graphql_timeline_instructions_to_tweets(obj['data']['search_by_raw_query']['search_timeline']['timeline']['instructions']))
 
 	@classmethod
 	def _cli_setup_parser(cls, subparser):
@@ -1814,6 +1820,10 @@ class TwitterUserScraper(TwitterSearchScraper):
 		return self._graphql_user_results_to_user(obj['data']['user'])
 
 	def get_items(self):
+		for page in self.iter_item_pages():
+			yield from page
+
+	def iter_item_pages(self):
 		if self._isUserId:
 			# Resolve user ID to username
 			if self.entity is None:
@@ -1821,7 +1831,7 @@ class TwitterUserScraper(TwitterSearchScraper):
 			self._user = self.entity.username
 			self._isUserId = False
 			self._query = f'from:{self._user}'
-		yield from super().get_items()
+		yield from super().iter_item_pages()
 
 	@staticmethod
 	def is_valid_username(s):
@@ -1846,6 +1856,10 @@ class TwitterProfileScraper(TwitterUserScraper):
 	name = 'twitter-profile'
 
 	def get_items(self):
+		for page in self.iter_item_pages():
+			yield from page
+
+	def iter_item_pages(self):
 		if not self._isUserId:
 			if self.entity is None:
 				raise snscrape.base.ScraperException(f'Could not resolve username {self._user!r} to ID')
@@ -1900,12 +1914,13 @@ class TwitterProfileScraper(TwitterUserScraper):
 			if obj['data']['user']['result']['__typename'] == 'UserUnavailable':
 				raise snscrape.base.EntityUnavailable('User unavailable')
 			instructions = obj['data']['user']['result']['timeline_v2']['timeline']['instructions']
+			page = []
 			if not gotPinned:
 				for instruction in instructions:
 					if instruction['type'] == 'TimelinePinEntry':
 						gotPinned = True
 						tweetId = int(instruction['entry']['entryId'][6:]) if instruction['entry']['entryId'].startswith('tweet-') else None
-						yield self._graphql_timeline_tweet_item_result_to_tweet(instruction['entry']['content']['itemContent']['tweet_results']['result'], tweetId = tweetId, pinned = True)
+						page.append(self._graphql_timeline_tweet_item_result_to_tweet(instruction['entry']['content']['itemContent']['tweet_results']['result'], tweetId = tweetId, pinned = True))
 			tweets = list(self._graphql_timeline_instructions_to_tweets(instructions, pinned = False))
 			pageTweetIds = frozenset(tweet.id for tweet in tweets)
 			if len(pageTweetIds) > 0 and pageTweetIds in previousPagesTweetIds:
@@ -1916,7 +1931,8 @@ class TwitterProfileScraper(TwitterUserScraper):
 			for tweet in tweets:
 				if getattr(getattr(tweet, 'user', None), 'id', userId) != userId:
 					continue
-				yield tweet
+				page.append(tweet)
+			yield page
 
 
 class TwitterHashtagScraper(TwitterSearchScraper):
@@ -1974,6 +1990,10 @@ class TwitterTweetScraper(_TwitterAPIScraper):
 		super().__init__(f'https://twitter.com/i/web/status/{self._tweetId}', **kwargs)
 
 	def get_items(self):
+		for page in self.iter_item_pages():
+			yield from page
+
+	def iter_item_pages(self):
 		paginationVariables = {
 			'focalTweetId': str(self._tweetId),
 			'cursor': None,
@@ -2021,22 +2041,24 @@ class TwitterTweetScraper(_TwitterAPIScraper):
 			obj = self._get_api_data(url, _TwitterAPIType.GRAPHQL, params = params, instructionsPath = instructionsPath)
 			if not obj['data']:
 				return
+			page = []
 			for instruction in obj['data']['threaded_conversation_with_injections_v2']['instructions']:
 				if instruction['type'] != 'TimelineAddEntries':
 					continue
 				for entry in instruction['entries']:
 					if entry['entryId'] == f'tweet-{self._tweetId}' and entry['content']['entryType'] == 'TimelineTimelineItem' and entry['content']['itemContent']['itemType'] == 'TimelineTweet':
-						yield self._graphql_timeline_tweet_item_result_to_tweet(entry['content']['itemContent']['tweet_results']['result'], tweetId = self._tweetId)
+						page.append(self._graphql_timeline_tweet_item_result_to_tweet(entry['content']['itemContent']['tweet_results']['result'], tweetId = self._tweetId))
 						break
+			yield page
 		elif self._mode is TwitterTweetScraperMode.SCROLL:
 			hasModeratedReplies = False
 			for obj in self._iter_api_data(url, _TwitterAPIType.GRAPHQL, params, paginationParams, direction = _ScrollDirection.BOTH, instructionsPath = instructionsPath):
 				if not obj['data']:
 					continue
-				yield from self._graphql_timeline_instructions_to_tweets(obj['data']['threaded_conversation_with_injections_v2']['instructions'], includeConversationThreads = True)
+				yield list(self._graphql_timeline_instructions_to_tweets(obj['data']['threaded_conversation_with_injections_v2']['instructions'], includeConversationThreads = True))
 				hasModeratedReplies = hasModeratedReplies or self._has_moderated_replies(obj, self._tweetId)
 			if hasModeratedReplies:
-				yield from self._get_moderated_replies(self._tweetId)
+				yield list(self._get_moderated_replies(self._tweetId))
 		elif self._mode is TwitterTweetScraperMode.RECURSE:
 			seenTweets = set()
 			queue = collections.deque()
@@ -2051,19 +2073,23 @@ class TwitterTweetScraper(_TwitterAPIScraper):
 				for obj in self._iter_api_data(url, _TwitterAPIType.GRAPHQL, thisParams, thisPagParams, direction = _ScrollDirection.BOTH, instructionsPath = instructionsPath):
 					if not obj['data']:
 						continue
+					page = []
 					for tweet in self._graphql_timeline_instructions_to_tweets(obj['data']['threaded_conversation_with_injections_v2']['instructions'], includeConversationThreads = True):
 						if tweet.id not in seenTweets:
-							yield tweet
+							page.append(tweet)
 							seenTweets.add(tweet.id)
 							if tweet.id != self._tweetId:  # Already queued at the beginning
 								queue.append(tweet.id)
+					yield page
 					hasModeratedReplies = hasModeratedReplies or self._has_moderated_replies(obj, tweetId)
 				if hasModeratedReplies:
+					page = []
 					for tweet in self._get_moderated_replies(tweetId):
 						if tweet.id not in seenTweets:
-							yield tweet
+							page.append(tweet)
 							seenTweets.add(tweet.id)
 							queue.append(tweet.id)
+					yield page
 
 	def _has_moderated_replies(self, obj, tweetId):
 		for instruction in obj['data']['threaded_conversation_with_injections_v2']['instructions']:
@@ -2187,7 +2213,7 @@ class TwitterCommunityScraper(_TwitterAPIScraper):
 			**optKwargs,
 		)
 
-	def get_items(self):
+	def iter_item_pages(self):
 		paginationVariables = {
 			'count': 20,
 			'cursor': None,
@@ -2226,7 +2252,11 @@ class TwitterCommunityScraper(_TwitterAPIScraper):
 		for obj in self._iter_api_data('https://twitter.com/i/api/graphql/9nnDM-yum8Te--T2REfgkg/CommunityTweetsTimeline', _TwitterAPIType.GRAPHQL, params, paginationParams, instructionsPath = ['data', 'communityResults', 'result', 'community_timeline', 'timeline', 'instructions']):
 			if obj['data']['communityResults']['result']['__typename'] == 'CommunityUnavailable':
 				raise snscrape.base.EntityUnavailable('Community unavailable')
-			yield from self._graphql_timeline_instructions_to_tweets(obj['data']['communityResults']['result']['community_timeline']['timeline']['instructions'])
+			yield list(self._graphql_timeline_instructions_to_tweets(obj['data']['communityResults']['result']['community_timeline']['timeline']['instructions']))
+
+	def get_items(self):
+		for page in self.iter_item_pages():
+			yield from page
 
 	@classmethod
 	def _cli_setup_parser(cls, subparser):

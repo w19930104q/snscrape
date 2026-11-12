@@ -134,8 +134,8 @@ class _RedditPushshiftScraper(snscrape.base.Scraper):
 
 		return cls(**kwargs)
 
-	def _iter_api(self, url, params = None):
-		'''Iterate through the Pushshift API using the 'until' parameter and yield the items.'''
+	def _iter_api_pages(self, url, params = None):
+		'''Iterate through the Pushshift API using the 'until' parameter and yield the items page by page.'''
 		lowestIdSeen = None
 		if params is None:
 			params = {}
@@ -143,11 +143,17 @@ class _RedditPushshiftScraper(snscrape.base.Scraper):
 			obj = self._get_api(url, params = params)
 			if not obj['data'] or (lowestIdSeen is not None and all(_cmp_id(d['id'], lowestIdSeen) >= 0 for d in obj['data'])): # end of pagination
 				break
+			page = []
 			for d in obj['data']:
 				if lowestIdSeen is None or _cmp_id(d['id'], lowestIdSeen) == -1:
-					yield self._api_obj_to_item(d)
+					page.append(self._api_obj_to_item(d))
 					lowestIdSeen = d['id']
+			yield page
 			params['until'] = obj["data"][-1]["created_utc"] + 1
+
+	def _iter_api(self, url, params = None):
+		for page in self._iter_api_pages(url, params):
+			yield from page
 
 
 class _RedditPushshiftSearchScraper(_RedditPushshiftScraper):
@@ -164,7 +170,7 @@ class _RedditPushshiftSearchScraper(_RedditPushshiftScraper):
 		if not self._submissions and not self._comments:
 			raise ValueError('At least one of submissions and comments must be True')
 
-	def _iter_api_submissions_and_comments(self, params: dict):
+	def _iter_api_submissions_and_comments_pages(self, params: dict):
 		# Retrieve both submissions and comments, interleave the results to get a reverse-chronological order
 		params['limit'] = '1000'
 		if self._before is not None:
@@ -185,38 +191,46 @@ class _RedditPushshiftSearchScraper(_RedditPushshiftScraper):
 			tipSubmission = next(submissionsIter)
 		except StopIteration:
 			# There are no submissions, just yield comments and return
-			yield from commentsIter
+			yield list(commentsIter)
 			return
 		try:
 			tipComment = next(commentsIter)
 		except StopIteration:
 			# There are no comments, just yield submissions and return
-			yield tipSubmission
-			yield from submissionsIter
+			yield [tipSubmission, *submissionsIter]
 			return
 
+		page = []
 		while True:
 			# Return newer first; if both have the same creation datetime, return the comment first
 			if tipSubmission.date > tipComment.date:
-				yield tipSubmission
+				page.append(tipSubmission)
 				try:
 					tipSubmission = next(submissionsIter)
 				except StopIteration:
 					# Reached the end of submissions, just yield the remaining comments and stop
-					yield tipComment
-					yield from commentsIter
+					page.append(tipComment)
+					page.extend(commentsIter)
 					break
 			else:
-				yield tipComment
+				page.append(tipComment)
 				try:
 					tipComment = next(commentsIter)
 				except StopIteration:
-					yield tipSubmission
-					yield from submissionsIter
+					page.append(tipSubmission)
+					page.extend(submissionsIter)
 					break
+		yield page
+
+	def _iter_api_submissions_and_comments(self, params: dict):
+		for page in self._iter_api_submissions_and_comments_pages(params):
+			yield from page
 
 	def get_items(self):
 		yield from self._iter_api_submissions_and_comments({type(self)._apiField: self._name})
+
+	def iter_item_pages(self):
+		yield from self._iter_api_submissions_and_comments_pages({type(self)._apiField: self._name})
 
 	@classmethod
 	def _cli_setup_parser(cls, subparser):

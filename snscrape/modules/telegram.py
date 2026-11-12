@@ -129,12 +129,16 @@ class TelegramChannelScraper(snscrape.base.Scraper):
 			yield TelegramPost(url = url, date = date, content = content, outlinks = outlinks, linkPreview = linkPreview)
 
 	def get_items(self):
+		for page in self.iter_item_pages():
+			yield from page
+
+	def iter_item_pages(self):
 		r, soup = self._initial_page()
 		if '/s/' not in r.url:
 			_logger.warning('No public post list for this user')
 			return
 		while True:
-			yield from self._soup_to_items(soup, r.url)
+			yield list(self._soup_to_items(soup, r.url))
 			pageLink = soup.find('a', attrs = {'class': 'tme_messages_more', 'data-before': True})
 			if not pageLink:
 				break

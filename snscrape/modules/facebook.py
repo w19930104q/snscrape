@@ -177,6 +177,10 @@ class _FacebookUserAndCommunityScraper(_FacebookCommonScraper):
 		return self._initialPage, self._initialPageSoup
 
 	def get_items(self):
+		for page in self.iter_item_pages():
+			yield from page
+
+	def iter_item_pages(self):
 		nextPageLinkPattern = re.compile(r'^/pages_reaction_units/more/\?page_id=')
 		spuriousForLoopPattern = re.compile(r'^for \(;;\);')
 
@@ -184,7 +188,7 @@ class _FacebookUserAndCommunityScraper(_FacebookCommonScraper):
 		if r.status_code == 404:
 			_logger.warning('User does not exist')
 			return
-		yield from self._soup_to_items(soup, self._baseUrl, 'user')
+		yield list(self._soup_to_items(soup, self._baseUrl, 'user'))
 
 		while (nextPageLink := soup.find('a', ajaxify = nextPageLinkPattern)):
 			_logger.info('Retrieving next page')
@@ -203,7 +207,7 @@ class _FacebookUserAndCommunityScraper(_FacebookCommonScraper):
 			assert response['domops'][0][2] == False
 			assert '__html' in response['domops'][0][3]
 			soup = bs4.BeautifulSoup(response['domops'][0][3]['__html'], 'lxml')
-			yield from self._soup_to_items(soup, self._baseUrl, 'user')
+			yield list(self._soup_to_items(soup, self._baseUrl, 'user'))
 
 	@classmethod
 	def _cli_setup_parser(cls, subparser):
@@ -308,6 +312,10 @@ class FacebookGroupScraper(_FacebookCommonScraper):
 		self._group = group
 
 	def get_items(self):
+		for page in self.iter_item_pages():
+			yield from page
+
+	def iter_item_pages(self):
 		headers = {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_10_1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/39.0.2171.95 Safari/537.36', 'Accept-Language': 'en-US,en;q=0.5'}
 
 		pageletDataPattern = re.compile(r'"GroupEntstreamPagelet",\{.*?\}(?=,\{)')
@@ -328,6 +336,7 @@ class FacebookGroupScraper(_FacebookCommonScraper):
 		soup = bs4.BeautifulSoup(r.text, 'lxml')
 
 		# Posts are inside an HTML comment in two code tags with IDs listed in JS...
+		initialPage = []
 		for codeContainerIdStart in ('content:{pagelet_group_mall:{container_id:"', 'content:{group_mall_after_tti:{container_id:"'):
 			codeContainerIdPos = r.text.index(codeContainerIdStart) + len(codeContainerIdStart)
 			codeContainerId = r.text[codeContainerIdPos : r.text.index('"', codeContainerIdPos)]
@@ -337,7 +346,8 @@ class FacebookGroupScraper(_FacebookCommonScraper):
 			if type(codeContainer.string) is not bs4.element.Comment:
 				raise snscrape.base.ScraperException('Code container does not contain a comment')
 			codeSoup = bs4.BeautifulSoup(codeContainer.string, 'lxml')
-			yield from self._soup_to_items(codeSoup, baseUrl, 'group')
+			initialPage.extend(self._soup_to_items(codeSoup, baseUrl, 'group'))
+		yield initialPage
 
 		# Pagination
 		while (data := pageletDataPattern.search(r.text).group(0)[pageletDataPrefixLength:]):
@@ -354,7 +364,7 @@ class FacebookGroupScraper(_FacebookCommonScraper):
 				# End of pagination
 				break
 			soup = bs4.BeautifulSoup(obj['payload'], 'lxml')
-			yield from self._soup_to_items(soup, baseUrl, 'group')
+			yield list(self._soup_to_items(soup, baseUrl, 'group'))
 
 	@classmethod
 	def _cli_setup_parser(cls, subparser):

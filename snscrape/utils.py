@@ -1,3 +1,8 @@
+import warnings
+
+import snscrape.base
+
+
 def dict_map(input, keyMap):
 	'''Return a new dict from an input dict and a {'input_key': 'output_key'} mapping'''
 
@@ -33,7 +38,7 @@ def module_deprecation_helper(all, **names):
 
 	def __getattr__(name):
 		if name in names:
-			warnings.warn(f'{name} is deprecated, use {names[name].__name__} instead', DeprecatedFeatureWarning, stacklevel = 2)
+			warnings.warn(f'{name} is deprecated, use {names[name].__name__} instead', snscrape.base.DeprecatedFeatureWarning, stacklevel = 2)
 			return names[name]
 		raise AttributeError(f'module {__name__!r} has no attribute {name!r}')
 	def __dir__():

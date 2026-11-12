@@ -256,6 +256,10 @@ class MastodonProfileScraper(_MastodonCommonScraper):
 		self._url = url
 
 	def get_items(self):
+		for page in self.iter_item_pages():
+			yield from page
+
+	def iter_item_pages(self):
 		initial = True
 		while True:
 			if initial:
@@ -277,7 +281,7 @@ class MastodonProfileScraper(_MastodonCommonScraper):
 					raise snscrape.base.ScraperException(f'Got status code {r.status_code}')
 			soup = bs4.BeautifulSoup(r.text, 'lxml')
 
-			yield from self._entries_to_items(soup.find('div', class_ = 'activity-stream').find_all('div', class_ = 'entry'), r.url)
+			yield list(self._entries_to_items(soup.find('div', class_ = 'activity-stream').find_all('div', class_ = 'entry'), r.url))
 
 			nextA = soup.find('a', class_ = 'load-more', href = lambda x: '?max_id=' in x or '&max_id=' in x)
 			if not nextA: # Before 2.5.0 (commit bb71538b)

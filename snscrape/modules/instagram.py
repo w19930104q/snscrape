@@ -107,6 +107,10 @@ class _InstagramCommonScraper(snscrape.base.Scraper):
 		return True, None
 
 	def get_items(self):
+		for page in self.iter_item_pages():
+			yield from page
+
+	def iter_item_pages(self):
 		r = self._initial_page()
 		if r.status_code == 404:
 			_logger.warning('Page does not exist')
@@ -120,7 +124,7 @@ class _InstagramCommonScraper(snscrape.base.Scraper):
 			_logger.warning('Private account')
 			return
 		pageID = response['entry_data'][self._pageName][0]['graphql'][self._responseContainer][self._pageIDKey]
-		yield from self._response_to_items(response['entry_data'][self._pageName][0]['graphql'])
+		yield list(self._response_to_items(response['entry_data'][self._pageName][0]['graphql']))
 		if not response['entry_data'][self._pageName][0]['graphql'][self._responseContainer][self._edgeXToMedia]['page_info']['has_next_page']:
 			return
 		endCursor = response['entry_data'][self._pageName][0]['graphql'][self._responseContainer][self._edgeXToMedia]['page_info']['end_cursor']
@@ -139,7 +143,7 @@ class _InstagramCommonScraper(snscrape.base.Scraper):
 			response = r._snscrape_json_obj
 			if not response['data'][self._responseContainer][self._edgeXToMedia]['edges']:
 				return
-			yield from self._response_to_items(response['data'])
+			yield list(self._response_to_items(response['data']))
 			if not response['data'][self._responseContainer][self._edgeXToMedia]['page_info']['has_next_page']:
 				return
 			endCursor = response['data'][self._responseContainer][self._edgeXToMedia]['page_info']['end_cursor']
